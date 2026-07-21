@@ -2,6 +2,7 @@
 
 import type { User as AuthUser } from "@supabase/supabase-js";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { enableDesktopNotifications, sendDesktopNotification } from "@/lib/notifications";
 import { supabase } from "@/lib/supabase";
 
 type User = { id: string; displayName: string; handle: string; bio: string; lastSeen: string };
@@ -86,8 +87,14 @@ export default function ChatApp() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
+  const notifiedCallRef = useRef<string | null>(null);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
+
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
+  useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
 
   useEffect(() => {
     let mounted = true;
@@ -186,13 +193,40 @@ export default function ChatApp() {
   useEffect(() => {
     if (!selectedId) return;
     const initialLoad = setTimeout(() => loadMessages(selectedId).catch((cause) => setError(asError(cause, "Could not load messages"))), 0);
-    const channel = supabase.channel(`messages:${selectedId}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${selectedId}` }, () => {
-        loadMessages(selectedId).catch(() => undefined);
-        refreshConversations().catch(() => undefined);
+    return () => clearTimeout(initialLoad);
+  }, [selectedId, loadMessages]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    enableDesktopNotifications().catch(() => undefined);
+
+    const notifyIncomingMessage = async (row: Record<string, unknown>) => {
+      const conversationId = String(row.conversation_id);
+      const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+      let senderName = conversation?.peerName || "Relay member";
+      if (!conversation) {
+        const { data } = await supabase.from("profiles").select("display_name").eq("id", String(row.sender_id)).maybeSingle();
+        senderName = data?.display_name || senderName;
+      }
+      const kind = String(row.kind);
+      const body = kind === "image" ? "Sent you a photo" : kind === "audio" ? "Sent you a voice message" : String(row.body || "New message");
+      await sendDesktopNotification(senderName, body);
+    };
+
+    const channel = supabase.channel(`messages:user:${authUser.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => {
+        const row = payload.new as Record<string, unknown>;
+        const conversationId = String(row.conversation_id);
+        refreshConversations(authUser.id).catch(() => undefined);
+        if (selectedIdRef.current === conversationId) loadMessages(conversationId).catch(() => undefined);
+
+        const isIncoming = String(row.sender_id) !== authUser.id;
+        const currentConversationIsVisible = selectedIdRef.current === conversationId && document.visibilityState === "visible" && document.hasFocus();
+        if (isIncoming && !currentConversationIsVisible) notifyIncomingMessage(row).catch(() => undefined);
       }).subscribe();
-    return () => { clearTimeout(initialLoad); supabase.removeChannel(channel); };
-  }, [selectedId, loadMessages, refreshConversations]);
+
+    return () => { supabase.removeChannel(channel); };
+  }, [authUser, loadMessages, refreshConversations]);
 
   useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
 
@@ -220,13 +254,20 @@ export default function ChatApp() {
     if (!authUser || activeCall) return;
     const poll = async () => {
       const { data } = await supabase.from("calls").select("*").eq("callee_id", authUser.id).eq("status", "ringing").order("created_at", { ascending: false }).limit(1).maybeSingle();
-      if (!data) { setIncoming(null); return; }
+      if (!data) { setIncoming(null); notifiedCallRef.current = null; return; }
       const { data: caller } = await supabase.from("profiles").select("display_name").eq("id", data.caller_id).single();
-      setIncoming({
+      const nextCall: Call = {
         id: data.id, conversationId: data.conversation_id, callerId: data.caller_id, calleeId: data.callee_id,
         callerName: caller?.display_name || "Relay member", mode: data.mode, status: data.status,
         offerSdp: data.offer_sdp, answerSdp: data.answer_sdp,
-      });
+      };
+      setIncoming(nextCall);
+      if (notifiedCallRef.current !== nextCall.id) {
+        notifiedCallRef.current = nextCall.id;
+        if (document.visibilityState !== "visible" || !document.hasFocus()) {
+          sendDesktopNotification(`Incoming ${nextCall.mode} call`, `${nextCall.callerName} is calling`).catch(() => undefined);
+        }
+      }
     };
     poll();
     const timer = setInterval(poll, 2200);

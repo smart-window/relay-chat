@@ -1,6 +1,6 @@
 {
   "name": "relay-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,11 +12,12 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "test": "npm run lint && npx tsc --noEmit && npm run build",
-    "lint": "eslint . --ignore-pattern .next --ignore-pattern dist"
+    "lint": "eslint . --ignore-pattern .next --ignore-pattern dist --ignore-pattern src-tauri/target"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"

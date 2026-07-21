@@ -1,6 +1,6 @@
 [package]
 name = "relay"
-version = "0.1.0"
+version = "0.1.1"
 description = "Private conversations, closer"
 authors = ["smart-window"]
 edition = "2021"
@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2.3.3"
 
 [features]
 default = ["custom-protocol"]
