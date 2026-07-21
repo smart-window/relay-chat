@@ -5,11 +5,23 @@ let permissionCheck: Promise<boolean> | null = null;
 export const isDesktopApp = () =>
   typeof window !== "undefined" && Boolean((window as DesktopWindow).__TAURI_INTERNALS__);
 
-export function enableDesktopNotifications() {
+export async function desktopNotificationsGranted() {
+  if (!isDesktopApp()) return false;
+
+  try {
+    const { isPermissionGranted } = await import("@tauri-apps/plugin-notification");
+    return await isPermissionGranted();
+  } catch {
+    return false;
+  }
+}
+
+export function enableDesktopNotifications(options: { retry?: boolean } = {}) {
   if (!isDesktopApp()) return Promise.resolve(false);
+  if (options.retry) permissionCheck = null;
   if (permissionCheck) return permissionCheck;
 
-  permissionCheck = (async () => {
+  const currentCheck = (async () => {
     try {
       const { isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
       if (await isPermissionGranted()) return true;
@@ -18,12 +30,17 @@ export function enableDesktopNotifications() {
       return false;
     }
   })();
+  permissionCheck = currentCheck;
 
-  return permissionCheck;
+  currentCheck.then((granted) => {
+    if (!granted && permissionCheck === currentCheck) permissionCheck = null;
+  });
+
+  return currentCheck;
 }
 
 export async function sendDesktopNotification(title: string, body: string) {
-  if (!(await enableDesktopNotifications())) return;
+  if (!(await desktopNotificationsGranted())) return;
 
   try {
     const { sendNotification } = await import("@tauri-apps/plugin-notification");
