@@ -42,6 +42,17 @@ npm run build
 
 The included Actions workflow exports the Next.js frontend and publishes it to GitHub Pages whenever `main` changes. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` as repository Actions secrets, enable GitHub Pages with GitHub Actions as the source, and set `https://smart-window.github.io/relay-chat/` as the Supabase Auth Site URL and an allowed redirect URL.
 
+## Desktop applications
+
+Relay is packaged with Tauri for macOS and Windows. The desktop apps use the same Supabase project as the website, so accounts and conversations stay synchronized.
+
+```bash
+npm run desktop:dev
+npm run desktop:build
+```
+
+The `Build Relay desktop apps` GitHub Actions workflow builds Apple Silicon and Intel macOS DMGs plus Windows installers, then publishes them to a GitHub Release. The community builds use macOS ad-hoc signing and an unsigned Windows installer; production distribution without security warnings requires paid Apple Developer and Windows code-signing certificates.
+
 ## Current scope
 
 Relay is an MVP centered on direct conversations. Browser calls work peer-to-peer when the network permits it. A production-scale launch should add a TURN service for restrictive networks, push notifications, abuse controls, moderation, and optional end-to-end message encryption.

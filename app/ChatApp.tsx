@@ -21,7 +21,11 @@ type Call = {
 };
 
 const asError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
-const appUrl = () => `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH || ""}/`;
+const appUrl = () => {
+  const desktopWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
+  if (desktopWindow.__TAURI_INTERNALS__) return "https://smart-window.github.io/relay-chat/";
+  return `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH || ""}/`;
+};
 const initials = (name: string) => name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 const relativeTime = (value?: string | null) => {
   if (!value) return "";
