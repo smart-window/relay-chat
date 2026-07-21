@@ -23,6 +23,8 @@ type Call = {
 };
 
 const asError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
+const handleHelp = "Use 3–24 lowercase letters, numbers, or underscores. Example: smart_window";
+const normalizeHandle = (value: string) => value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 24);
 const appUrl = () => {
   const desktopWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
   if (desktopWindow.__TAURI_INTERNALS__) return "https://smart-window.github.io/relay-chat/";
@@ -514,9 +516,12 @@ function ProfileModal({ user, onClose, onSave }: { user: User; onClose: () => vo
   const [error, setError] = useState("");
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setError("");
-    const normalizedHandle = handle.toLowerCase().replace(/[^a-z0-9_]/g, "");
+    const normalizedName = displayName.trim();
+    const normalizedHandle = normalizeHandle(handle);
+    if (normalizedName.length < 2) { setError("Display name must be at least 2 characters."); return; }
+    if (!/^[a-z0-9_]{3,24}$/.test(normalizedHandle)) { setError(handleHelp); return; }
     const { data, error: saveError } = await supabase.from("profiles").update({ display_name: displayName.trim(), handle: normalizedHandle, bio: bio.trim() }).eq("id", user.id).select("*").single();
-    if (saveError) setError(saveError.message); else onSave(toUser(data));
+    if (saveError) setError(saveError.code === "23505" ? "That handle is already taken. Try another one." : saveError.message); else onSave(toUser(data));
   };
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(event.target.value)} minLength={3} maxLength={24} pattern="[a-z0-9_]+" required /></div></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()} noValidate><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(normalizeHandle(event.target.value))} maxLength={24} placeholder="smart_window" autoCapitalize="none" autoComplete="username" spellCheck={false} aria-describedby="handle-help" /></div><small className="field-help" id="handle-help">3–24 lowercase letters, numbers, or underscores. Example: smart_window</small></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
 }
