@@ -212,6 +212,23 @@ button { color: inherit; }
 .auth-modal input { width: 100%; margin-top: 6px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; outline: 0; background: white; color: var(--ink); font-size: 13px; text-transform: none; letter-spacing: 0; }
 .auth-switch { width: 100%; margin-top: 12px; padding: 7px; border: 0; background: transparent; color: #6d7570; cursor: pointer; font-size: 11px; }
 .auth-switch:hover { color: var(--ink); }
+.permissions-modal { width: min(520px, 100%); }
+.permissions-modal h2 { margin-bottom: 10px; }
+.permissions-intro { margin: 0 0 22px; color: #6d7570; font-size: 13px; line-height: 1.55; }
+.permission-list { display: grid; gap: 9px; }
+.permission-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: white; }
+.permission-row > span:nth-child(2) { display: grid; gap: 3px; }
+.permission-row strong { font-size: 13px; }
+.permission-row small { color: #737c77; font-size: 11px; line-height: 1.35; }
+.permission-row > b { color: #7b837f; font-size: 10px; }
+.permission-row > b.granted { color: #26735c; }
+.permission-row > b.blocked { color: #a13d31; }
+.permission-icon { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 11px; color: #6d7570; background: #eef1ef; font-weight: 800; }
+.permission-icon.granted { color: #176149; background: #dff1e9; }
+.permission-icon.blocked { color: #9a352a; background: #f8e3df; }
+.permission-error { margin: 16px 0 4px; line-height: 1.45; }
+.settings-help { margin: 0; color: #737c77; font-size: 10px; line-height: 1.5; }
+.save-profile:disabled { cursor: wait; opacity: .68; }
 .incoming-card { min-width: 330px; padding: 45px 35px 35px; border-radius: 30px; background: var(--paper); text-align: center; }
 .incoming-card .avatar { margin: 0 auto 20px; }
 .incoming-card p { color: #77807b; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }

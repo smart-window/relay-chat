@@ -3,7 +3,7 @@
 import type { User as AuthUser } from "@supabase/supabase-js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import DownloadSection from "@/app/DownloadSection";
-import { enableDesktopNotifications, sendDesktopNotification } from "@/lib/notifications";
+import { enableDesktopNotifications, isDesktopApp, sendDesktopNotification } from "@/lib/notifications";
 import { supabase } from "@/lib/supabase";
 
 type User = { id: string; displayName: string; handle: string; bio: string; lastSeen: string };
@@ -21,10 +21,14 @@ type Call = {
   mode: "voice" | "video"; status: "ringing" | "active" | "ended";
   offerSdp: RTCSessionDescriptionInit | null; answerSdp: RTCSessionDescriptionInit | null;
 };
+type PermissionStatus = "unchecked" | "granted" | "blocked";
+type DesktopPermissions = { notifications: PermissionStatus; microphone: PermissionStatus; camera: PermissionStatus };
 
 const asError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 const handleHelp = "Use 3–24 lowercase letters, numbers, or underscores. Example: smart_window";
 const normalizeHandle = (value: string) => value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 24);
+const permissionSetupKey = "relay:desktop-permissions:v1";
+const initialDesktopPermissions: DesktopPermissions = { notifications: "unchecked", microphone: "unchecked", camera: "unchecked" };
 const appUrl = () => {
   const desktopWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
   if (desktopWindow.__TAURI_INTERNALS__) return "https://smart-window.github.io/relay-chat/";
@@ -74,6 +78,10 @@ export default function ChatApp() {
   const [results, setResults] = useState<User[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showPermissions, setShowPermissions] = useState(false);
+  const [desktopPermissions, setDesktopPermissions] = useState<DesktopPermissions>(initialDesktopPermissions);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionError, setPermissionError] = useState("");
   const [mobileSidebar, setMobileSidebar] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -98,6 +106,37 @@ export default function ChatApp() {
 
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
+
+  const requestMediaPermission = async (kind: "microphone" | "camera") => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(kind === "microphone" ? { audio: true } : { video: true });
+      stream.getTracks().forEach((track) => track.stop());
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const requestDesktopPermissions = async () => {
+    setPermissionBusy(true);
+    setPermissionError("");
+    const notifications = await enableDesktopNotifications({ retry: true });
+    const microphone = await requestMediaPermission("microphone");
+    const camera = await requestMediaPermission("camera");
+    const next: DesktopPermissions = {
+      notifications: notifications ? "granted" : "blocked",
+      microphone: microphone ? "granted" : "blocked",
+      camera: camera ? "granted" : "blocked",
+    };
+    setDesktopPermissions(next);
+    if (notifications && microphone && camera) {
+      window.localStorage.setItem(permissionSetupKey, "granted");
+    } else {
+      window.localStorage.removeItem(permissionSetupKey);
+      setPermissionError("Some permissions are still blocked. Allow Relay in your system settings, then try again.");
+    }
+    setPermissionBusy(false);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -184,6 +223,7 @@ export default function ChatApp() {
       if (profileError) throw profileError;
       if (!live) return;
       setMe(toUser(data));
+      if (isDesktopApp() && window.localStorage.getItem(permissionSetupKey) !== "granted") setShowPermissions(true);
       await refreshConversations(authUser.id);
       if (live) setAppReady(true);
     })().catch((cause) => { if (live) { setError(asError(cause, "Could not open Relay")); setAppReady(true); } });
@@ -201,7 +241,6 @@ export default function ChatApp() {
 
   useEffect(() => {
     if (!authUser) return;
-    enableDesktopNotifications().catch(() => undefined);
 
     const notifyIncomingMessage = async (row: Record<string, unknown>) => {
       const conversationId = String(row.conversation_id);
@@ -456,7 +495,9 @@ export default function ChatApp() {
 
       {showSearch && <div className="modal-backdrop" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="New conversation"><button className="modal-close" onClick={() => setShowSearch(false)}>×</button><p className="eyebrow">New conversation</p><h2>Who’s on your mind?</h2><label className="search-field"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or @handle" /></label><div className="search-results">{search.length < 2 && <p>Type at least two characters to find someone on Relay.</p>}{search.length >= 2 && results.length === 0 && <p>No matches yet. They may need to create a Relay account first.</p>}{search.length >= 2 && results.map((user) => <button key={user.id} onClick={() => startConversation(user.id)}><span className="avatar avatar-2">{initials(user.displayName)}</span><span><strong>{user.displayName}</strong><small>@{user.handle}</small></span><b>Message →</b></button>)}</div></section></div>}
 
-      {showProfile && <ProfileModal user={me} onClose={() => setShowProfile(false)} onSave={(user) => { setMe(user); setShowProfile(false); }} />}
+      {showProfile && <ProfileModal user={me} onClose={() => setShowProfile(false)} onPermissions={() => { setShowProfile(false); setShowPermissions(true); }} onSave={(user) => { setMe(user); setShowProfile(false); }} />}
+
+      {showPermissions && <PermissionsModal permissions={desktopPermissions} busy={permissionBusy} error={permissionError} onEnable={requestDesktopPermissions} onClose={() => setShowPermissions(false)} />}
 
       {incoming && !activeCall && <div className="call-overlay"><div className="incoming-card"><span className="avatar avatar-2 xlarge">{initials(incoming.callerName)}</span><p>Incoming {incoming.mode} call</p><h2>{incoming.callerName}</h2><div><button className="decline" onClick={() => closeCall()}>×</button><button className="answer" onClick={answerCall}>☎</button></div></div></div>}
 
@@ -509,7 +550,18 @@ function AuthLanding() {
   </main>;
 }
 
-function ProfileModal({ user, onClose, onSave }: { user: User; onClose: () => void; onSave: (user: User) => void }) {
+function PermissionsModal({ permissions, busy, error, onEnable, onClose }: { permissions: DesktopPermissions; busy: boolean; error: string; onEnable: () => void; onClose: () => void }) {
+  const rows: Array<{ key: keyof DesktopPermissions; title: string; detail: string }> = [
+    { key: "notifications", title: "Notifications", detail: "See new messages and incoming calls." },
+    { key: "microphone", title: "Microphone", detail: "Record voice notes and join calls." },
+    { key: "camera", title: "Camera", detail: "Share video during video calls." },
+  ];
+  const allGranted = Object.values(permissions).every((status) => status === "granted");
+  const label = (status: PermissionStatus) => status === "granted" ? "Enabled" : status === "blocked" ? "Blocked" : "Not checked";
+  return <div className="modal-backdrop"><section className="modal permissions-modal" aria-modal="true" role="dialog" aria-labelledby="permissions-title"><button type="button" className="modal-close" onClick={onClose} aria-label="Close permission setup">×</button><p className="eyebrow">Desktop setup</p><h2 id="permissions-title">Enable Relay’s permissions.</h2><p className="permissions-intro">Approve each system prompt so messages, voice notes, and calls work correctly.</p><div className="permission-list">{rows.map((row) => <article className="permission-row" key={row.key}><span className={`permission-icon ${permissions[row.key]}`}>{permissions[row.key] === "granted" ? "✓" : permissions[row.key] === "blocked" ? "!" : "•"}</span><span><strong>{row.title}</strong><small>{row.detail}</small></span><b className={permissions[row.key]}>{label(permissions[row.key])}</b></article>)}</div>{error && <><p className="form-error permission-error" role="alert">{error}</p><p className="settings-help">macOS: System Settings → Privacy &amp; Security. Windows: Settings → Privacy &amp; security.</p></>}<button type="button" className="save-profile" onClick={allGranted ? onClose : onEnable} disabled={busy}>{busy ? "Waiting for system prompts…" : allGranted ? "Done" : permissions.notifications === "unchecked" ? "Enable all permissions" : "Try again"}</button><button type="button" className="auth-switch" onClick={onClose}>Later</button></section></div>;
+}
+
+function ProfileModal({ user, onClose, onSave, onPermissions }: { user: User; onClose: () => void; onSave: (user: User) => void; onPermissions: () => void }) {
   const [displayName, setDisplayName] = useState(user.displayName);
   const [handle, setHandle] = useState(user.handle);
   const [bio, setBio] = useState(user.bio);
@@ -523,5 +575,5 @@ function ProfileModal({ user, onClose, onSave }: { user: User; onClose: () => vo
     const { data, error: saveError } = await supabase.from("profiles").update({ display_name: displayName.trim(), handle: normalizedHandle, bio: bio.trim() }).eq("id", user.id).select("*").single();
     if (saveError) setError(saveError.code === "23505" ? "That handle is already taken. Try another one." : saveError.message); else onSave(toUser(data));
   };
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()} noValidate><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(normalizeHandle(event.target.value))} maxLength={24} placeholder="smart_window" autoCapitalize="none" autoComplete="username" spellCheck={false} aria-describedby="handle-help" /></div><small className="field-help" id="handle-help">3–24 lowercase letters, numbers, or underscores. Example: smart_window</small></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()} noValidate><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(normalizeHandle(event.target.value))} maxLength={24} placeholder="smart_window" autoCapitalize="none" autoComplete="username" spellCheck={false} aria-describedby="handle-help" /></div><small className="field-help" id="handle-help">3–24 lowercase letters, numbers, or underscores. Example: smart_window</small></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={onPermissions}>Camera, microphone &amp; notifications</button><button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
 }
