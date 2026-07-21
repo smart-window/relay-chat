@@ -21,6 +21,7 @@ type Call = {
 };
 
 const asError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
+const appUrl = () => `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH || ""}/`;
 const initials = (name: string) => name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 const relativeTime = (value?: string | null) => {
   if (!value) return "";
@@ -438,7 +439,7 @@ function AuthLanding() {
         if (displayName.trim().length < 2) throw new Error("Enter a display name with at least 2 characters.");
         const { data, error: authError } = await supabase.auth.signUp({
           email, password,
-          options: { data: { display_name: displayName.trim() }, emailRedirectTo: window.location.origin },
+          options: { data: { display_name: displayName.trim() }, emailRedirectTo: appUrl() },
         });
         if (authError) throw authError;
         if (!data.session) setNotice("Account created. Check your email to confirm it, then sign in.");
