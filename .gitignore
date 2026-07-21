@@ -17,6 +17,7 @@
 /.next/
 /.vinext/
 /out/
+/src-tauri/target/
 
 # misc
 .DS_Store
