@@ -212,6 +212,9 @@ button { color: inherit; }
 .auth-modal input { width: 100%; margin-top: 6px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; outline: 0; background: white; color: var(--ink); font-size: 13px; text-transform: none; letter-spacing: 0; }
 .auth-switch { width: 100%; margin-top: 12px; padding: 7px; border: 0; background: transparent; color: #6d7570; cursor: pointer; font-size: 11px; }
 .auth-switch:hover { color: var(--ink); }
+.auth-switch:disabled { cursor: wait; opacity: .65; }
+.update-relay { color: #176149; font-weight: 750; }
+.update-status { margin: 2px 0 4px; color: #66706b; font-size: 10px; line-height: 1.45; }
 .permissions-modal { width: min(520px, 100%); }
 .permissions-modal h2 { margin-bottom: 10px; }
 .permissions-intro { margin: 0 0 22px; color: #6d7570; font-size: 13px; line-height: 1.55; }
