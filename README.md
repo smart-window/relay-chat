@@ -4,41 +4,47 @@ Relay is a full-stack chat platform for text, image, and audio messages plus bro
 
 ## Features
 
-- Account sign-in with ChatGPT identity and a customizable Relay profile
+- Free email/password accounts powered by Supabase Auth
 - Searchable people directory and one-to-one conversations
-- Persistent real-time-style messaging with text, private images, and audio
+- Realtime text messaging with private image and audio transfer
 - In-browser voice-note recording
-- WebRTC voice and video calling with private call signaling
-- Responsive desktop and mobile experience
-- Cloudflare D1 for app data and R2 for private media
+- WebRTC voice and video calls with private call signaling
+- Responsive desktop and mobile interface
+- Row-level security on conversations, messages, calls, and media
+
+## Stack
+
+- Next.js 16 and React 19
+- Supabase Auth, Postgres, Realtime, and private Storage
+- WebRTC with public STUN discovery
+- Vercel-compatible deployment
 
 ## Local development
 
-Relay uses the Vinext runtime and requires Node.js 22.13 or newer.
+Copy `.env.example` to `.env.local` and add your Supabase project URL and publishable key, then run:
 
 ```bash
 npm install
 npm run dev
 ```
 
-The local landing page works without identity headers. Signed-in product flows are provided by the Sites deployment through Sign in with ChatGPT.
+Run `supabase/migrations/001_relay.sql` in a new Supabase project's SQL Editor before creating accounts. Existing installations should apply later numbered migrations in order.
 
 ## Checks
 
 ```bash
-npx tsc --noEmit
 npm run lint
+npx tsc --noEmit
 npm run build
 ```
 
-## Architecture
+## Deploy to Vercel
 
-The web application is built with Next.js-compatible React through Vinext and targets Cloudflare Workers. Structured data and WebRTC signaling live in D1; media bytes live in R2 and are served only after a server-side conversation membership check. Calls use WebRTC with STUN discovery and DTLS-SRTP media encryption.
-
-## Deployment
-
-The `.openai/hosting.json` manifest declares the logical D1 and R2 bindings used by OpenAI Sites. The checked-in Drizzle migration creates the production schema.
+1. Import this GitHub repository into a Vercel Hobby project.
+2. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` as environment variables.
+3. Deploy with the standard Next.js preset.
+4. Add the Vercel production URL to Supabase Authentication → URL Configuration as the Site URL and an allowed redirect URL.
 
 ## Current scope
 
-Relay is an MVP centered on direct conversations. Group chat, push notifications, message moderation, TURN relay infrastructure, and end-to-end message encryption are natural next steps for a larger public launch.
+Relay is an MVP centered on direct conversations. Browser calls work peer-to-peer when the network permits it. A production-scale launch should add a TURN service for restrictive networks, push notifications, abuse controls, moderation, and optional end-to-end message encryption.

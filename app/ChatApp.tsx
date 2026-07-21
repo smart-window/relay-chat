@@ -1,38 +1,42 @@
 "use client";
 
+import type { User as AuthUser } from "@supabase/supabase-js";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
-type User = { id: string; displayName: string; handle: string; bio: string; lastSeen: number };
+type User = { id: string; displayName: string; handle: string; bio: string; lastSeen: string };
 type Conversation = {
-  id: string; kind: string; title: string | null; createdAt: number; peerId: string;
-  peerName: string; peerHandle: string; peerLastSeen: number; lastBody: string | null;
-  lastKind: string | null; lastMessageAt: number | null;
+  id: string; peerId: string; peerName: string; peerHandle: string; peerLastSeen: string;
+  lastBody: string | null; lastKind: "text" | "image" | "audio" | null; lastMessageAt: string | null;
 };
 type Message = {
   id: string; senderId: string; senderName: string; kind: "text" | "image" | "audio";
-  body: string | null; objectName: string | null; objectType: string | null; createdAt: number;
+  body: string | null; objectName: string | null; objectType: string | null; storagePath: string | null;
+  mediaUrl: string | null; createdAt: string;
 };
 type Call = {
   id: string; conversationId: string; callerId: string; calleeId: string; callerName: string;
-  mode: "voice" | "video"; status: "ringing" | "active" | "ended"; offerSdp: string; answerSdp: string | null;
+  mode: "voice" | "video"; status: "ringing" | "active" | "ended";
+  offerSdp: RTCSessionDescriptionInit | null; answerSdp: RTCSessionDescriptionInit | null;
 };
 
-const API = async <T,>(url: string, options?: RequestInit): Promise<T> => {
-  const response = await fetch(url, options);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error((data as { error?: string }).error || "Request failed");
-  return data as T;
-};
-
+const asError = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 const initials = (name: string) => name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
-const relativeTime = (timestamp?: number | null) => {
-  if (!timestamp) return "";
-  const delta = Date.now() - timestamp;
-  if (delta < 60_000) return "now";
+const relativeTime = (value?: string | null) => {
+  if (!value) return "";
+  const delta = Date.now() - new Date(value).getTime();
+  if (delta < 120_000) return "now";
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`;
-  return new Date(timestamp).toLocaleDateString([], { month: "short", day: "numeric" });
+  return new Date(value).toLocaleDateString([], { month: "short", day: "numeric" });
 };
+const toUser = (row: Record<string, unknown>): User => ({
+  id: String(row.id),
+  displayName: String(row.display_name),
+  handle: String(row.handle),
+  bio: String(row.bio || ""),
+  lastSeen: String(row.last_seen),
+});
 
 function waitForIce(peer: RTCPeerConnection) {
   if (peer.iceGatheringState === "complete") return Promise.resolve();
@@ -48,7 +52,10 @@ function waitForIce(peer: RTCPeerConnection) {
   });
 }
 
-export default function ChatApp({ identityName }: { identityName: string }) {
+export default function ChatApp() {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [appReady, setAppReady] = useState(false);
   const [me, setMe] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -77,116 +84,201 @@ export default function ChatApp({ identityName }: { identityName: string }) {
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
 
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) { setAuthUser(data.session?.user || null); setAuthReady(true); }
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user || null);
+      setAuthReady(true);
+    });
+    return () => { mounted = false; data.subscription.unsubscribe(); };
+  }, []);
+
+  const refreshConversations = useCallback(async (userId = authUser?.id) => {
+    if (!userId) return;
+    const { data: mine, error: mineError } = await supabase.from("conversation_members").select("conversation_id").eq("user_id", userId);
+    if (mineError) throw mineError;
+    const ids = [...new Set((mine || []).map((row) => row.conversation_id as string))];
+    if (!ids.length) { setConversations([]); setSelectedId(null); return; }
+
+    const [{ data: members, error: memberError }, { data: recent, error: messageError }] = await Promise.all([
+      supabase.from("conversation_members").select("conversation_id,user_id").in("conversation_id", ids).neq("user_id", userId),
+      supabase.from("messages").select("conversation_id,kind,body,created_at").in("conversation_id", ids).order("created_at", { ascending: false }),
+    ]);
+    if (memberError) throw memberError;
+    if (messageError) throw messageError;
+    const peerIds = [...new Set((members || []).map((row) => row.user_id as string))];
+    const { data: peers, error: peerError } = peerIds.length
+      ? await supabase.from("profiles").select("id,display_name,handle,bio,last_seen").in("id", peerIds)
+      : { data: [], error: null };
+    if (peerError) throw peerError;
+
+    const peerById = new Map((peers || []).map((row) => [row.id as string, row]));
+    const peerByConversation = new Map((members || []).map((row) => [row.conversation_id as string, row.user_id as string]));
+    const lastByConversation = new Map<string, Record<string, unknown>>();
+    for (const row of recent || []) if (!lastByConversation.has(row.conversation_id as string)) lastByConversation.set(row.conversation_id as string, row);
+    const next = ids.flatMap((id) => {
+      const peerId = peerByConversation.get(id);
+      const peer = peerId ? peerById.get(peerId) : null;
+      if (!peerId || !peer) return [];
+      const last = lastByConversation.get(id);
+      return [{
+        id, peerId, peerName: String(peer.display_name), peerHandle: String(peer.handle), peerLastSeen: String(peer.last_seen),
+        lastBody: last ? String(last.body || "") : null,
+        lastKind: last ? last.kind as Conversation["lastKind"] : null,
+        lastMessageAt: last ? String(last.created_at) : null,
+      }];
+    }).sort((a, b) => new Date(b.lastMessageAt || 0).getTime() - new Date(a.lastMessageAt || 0).getTime());
+    setConversations(next);
+    setSelectedId((current) => current && next.some((item) => item.id === current) ? current : next[0]?.id || null);
+  }, [authUser?.id]);
+
+  const loadMessages = useCallback(async (conversationId: string) => {
+    const { data, error: messageError } = await supabase.from("messages").select("*").eq("conversation_id", conversationId).order("created_at", { ascending: true });
+    if (messageError) throw messageError;
+    const senderIds = [...new Set((data || []).map((row) => row.sender_id as string))];
+    const { data: senders, error: senderError } = senderIds.length
+      ? await supabase.from("profiles").select("id,display_name").in("id", senderIds)
+      : { data: [], error: null };
+    if (senderError) throw senderError;
+    const senderNames = new Map((senders || []).map((row) => [row.id as string, String(row.display_name)]));
+    const next = await Promise.all((data || []).map(async (row): Promise<Message> => {
+      let mediaUrl: string | null = null;
+      if (row.storage_path) {
+        const { data: signed } = await supabase.storage.from("media").createSignedUrl(row.storage_path as string, 3600);
+        mediaUrl = signed?.signedUrl || null;
+      }
+      return {
+        id: row.id as string, senderId: row.sender_id as string,
+        senderName: senderNames.get(row.sender_id as string) || "Relay member",
+        kind: row.kind as Message["kind"], body: row.body as string | null,
+        objectName: row.object_name as string | null, objectType: row.object_type as string | null,
+        storagePath: row.storage_path as string | null, mediaUrl, createdAt: row.created_at as string,
+      };
+    }));
+    setMessages(next);
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
+    let live = true;
+    (async () => {
+      const { data, error: profileError } = await supabase.from("profiles").select("*").eq("id", authUser.id).single();
+      if (profileError) throw profileError;
+      if (!live) return;
+      setMe(toUser(data));
+      await refreshConversations(authUser.id);
+      if (live) setAppReady(true);
+    })().catch((cause) => { if (live) { setError(asError(cause, "Could not open Relay")); setAppReady(true); } });
+    const touch = () => supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", authUser.id).then(() => undefined);
+    touch();
+    const timer = setInterval(touch, 60_000);
+    return () => { live = false; clearInterval(timer); };
+  }, [authUser, refreshConversations]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const initialLoad = setTimeout(() => loadMessages(selectedId).catch((cause) => setError(asError(cause, "Could not load messages"))), 0);
+    const channel = supabase.channel(`messages:${selectedId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${selectedId}` }, () => {
+        loadMessages(selectedId).catch(() => undefined);
+        refreshConversations().catch(() => undefined);
+      }).subscribe();
+    return () => { clearTimeout(initialLoad); supabase.removeChannel(channel); };
+  }, [selectedId, loadMessages, refreshConversations]);
+
+  useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); }, [messages]);
+
+  useEffect(() => {
+    if (!authUser || search.trim().length < 2) return;
+    const timer = setTimeout(async () => {
+      const query = search.toLowerCase().replace(/[^a-z0-9_ -]/g, "").trim();
+      if (!query) return;
+      const { data } = await supabase.from("profiles").select("*").neq("id", authUser.id)
+        .or(`display_name.ilike.%${query}%,handle.ilike.%${query}%`).limit(12);
+      setResults((data || []).map(toUser));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search, authUser]);
+
   const closeCall = useCallback(async (notify = true) => {
     const callId = activeCall?.id || incoming?.id;
-    if (notify && callId) API("/api/calls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "end", callId }) }).catch(() => undefined);
+    if (notify && callId) await supabase.from("calls").update({ status: "ended", updated_at: new Date().toISOString() }).eq("id", callId);
     peerRef.current?.close(); peerRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop()); localStreamRef.current = null;
     setActiveCall(null); setIncoming(null); setMuted(false); setCameraOff(false);
   }, [activeCall?.id, incoming?.id]);
 
-  const refreshConversations = useCallback(async () => {
-    const data = await API<{ conversations: Conversation[] }>("/api/conversations");
-    setConversations(data.conversations);
-    setSelectedId((current) => current || data.conversations[0]?.id || null);
-  }, []);
-
   useEffect(() => {
-    Promise.all([API<{ user: User }>("/api/profile"), API<{ conversations: Conversation[] }>("/api/conversations")])
-      .then(([profile, conversationData]) => {
-        setMe(profile.user);
-        setConversations(conversationData.conversations);
-        setSelectedId(conversationData.conversations[0]?.id || null);
-      })
-      .catch((cause) => setError(cause.message));
-  }, []);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    let live = true;
-    const load = () => API<{ messages: Message[] }>(`/api/conversations/${selectedId}/messages`)
-      .then((data) => live && setMessages(data.messages))
-      .catch(() => undefined);
-    load();
-    const timer = setInterval(load, 1800);
-    return () => { live = false; clearInterval(timer); };
-  }, [selectedId]);
-
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
-    if (search.trim().length < 2) return;
-    const timer = setTimeout(() => {
-      API<{ users: User[] }>(`/api/users?q=${encodeURIComponent(search)}`).then((data) => setResults(data.users)).catch(() => undefined);
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [search]);
-
-  useEffect(() => {
-    if (!me || activeCall) return;
-    const poll = () => API<{ call: Call | null }>("/api/calls")
-      .then(({ call }) => setIncoming(call?.status === "ringing" ? call : null)).catch(() => undefined);
+    if (!authUser || activeCall) return;
+    const poll = async () => {
+      const { data } = await supabase.from("calls").select("*").eq("callee_id", authUser.id).eq("status", "ringing").order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (!data) { setIncoming(null); return; }
+      const { data: caller } = await supabase.from("profiles").select("display_name").eq("id", data.caller_id).single();
+      setIncoming({
+        id: data.id, conversationId: data.conversation_id, callerId: data.caller_id, calleeId: data.callee_id,
+        callerName: caller?.display_name || "Relay member", mode: data.mode, status: data.status,
+        offerSdp: data.offer_sdp, answerSdp: data.answer_sdp,
+      });
+    };
     poll();
-    const timer = setInterval(poll, 2500);
+    const timer = setInterval(poll, 2200);
     return () => clearInterval(timer);
-  }, [me, activeCall]);
+  }, [authUser, activeCall]);
 
   useEffect(() => {
     if (!activeCall) return;
     const timer = setInterval(async () => {
-      const { call } = await API<{ call: Call | null }>(`/api/calls?callId=${activeCall.id}`).catch(() => ({ call: null }));
-      if (!call || call.status === "ended") return closeCall(false);
-      if (call.answerSdp && peerRef.current && !peerRef.current.remoteDescription) {
-        await peerRef.current.setRemoteDescription(JSON.parse(call.answerSdp));
-        setActiveCall((current) => current ? { ...current, status: "active" } : current);
+      const { data } = await supabase.from("calls").select("status,answer_sdp").eq("id", activeCall.id).maybeSingle();
+      if (!data || data.status === "ended") return closeCall(false);
+      if (data.answer_sdp && peerRef.current && !peerRef.current.remoteDescription) {
+        await peerRef.current.setRemoteDescription(data.answer_sdp as RTCSessionDescriptionInit);
+        setActiveCall((current) => current ? { ...current, status: "active", answerSdp: data.answer_sdp } : current);
       }
-    }, 1400);
+    }, 1300);
     return () => clearInterval(timer);
   }, [activeCall, closeCall]);
 
-  const openConversation = (id: string) => {
-    setSelectedId(id);
-    setMobileSidebar(false);
-  };
-
+  const openConversation = (id: string) => { setSelectedId(id); setMobileSidebar(false); };
   const startConversation = async (userId: string) => {
-    const { id } = await API<{ id: string }>("/api/conversations", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId }),
-    });
+    setError("");
+    const { data, error: rpcError } = await supabase.rpc("create_direct_conversation", { peer_id: userId });
+    if (rpcError) { setError(rpcError.message); return; }
     await refreshConversations();
-    openConversation(id);
+    openConversation(data as string);
     setShowSearch(false); setSearch(""); setResults([]);
   };
 
-  const send = async (body = draft, uploadId?: string) => {
-    if (!selectedId || (!body.trim() && !uploadId)) return;
+  const send = async () => {
+    if (!selectedId || !me || !draft.trim()) return;
     setSending(true); setError("");
-    try {
-      await API(`/api/conversations/${selectedId}/messages`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body, uploadId }),
-      });
-      setDraft("");
-      const data = await API<{ messages: Message[] }>(`/api/conversations/${selectedId}/messages`);
-      setMessages(data.messages);
-      await refreshConversations();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not send message");
-    } finally { setSending(false); }
+    const body = draft.trim();
+    const { error: sendError } = await supabase.from("messages").insert({ conversation_id: selectedId, sender_id: me.id, kind: "text", body });
+    if (sendError) setError(sendError.message);
+    else { setDraft(""); await Promise.all([loadMessages(selectedId), refreshConversations()]); }
+    setSending(false);
   };
 
   const uploadFile = async (file: File) => {
+    if (!selectedId || !me) return;
+    if (file.size > 12 * 1024 * 1024) { setError("Files must be 12 MB or smaller."); return; }
+    const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : null;
+    if (!kind) { setError("Choose an image or audio file."); return; }
     setSending(true); setError("");
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(-100) || `${kind}.bin`;
+    const path = `${me.id}/${crypto.randomUUID()}-${safeName}`;
     try {
-      const form = new FormData(); form.append("file", file);
-      const upload = await API<{ uploadId: string }>("/api/uploads", { method: "POST", body: form });
-      await send("", upload.uploadId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Upload failed");
-      setSending(false);
-    }
+      const { error: uploadError } = await supabase.storage.from("media").upload(path, file, { contentType: file.type, upsert: false });
+      if (uploadError) throw uploadError;
+      const { error: messageError } = await supabase.from("messages").insert({
+        conversation_id: selectedId, sender_id: me.id, kind, storage_path: path, object_name: file.name, object_type: file.type,
+      });
+      if (messageError) { await supabase.storage.from("media").remove([path]); throw messageError; }
+      await Promise.all([loadMessages(selectedId), refreshConversations()]);
+    } catch (cause) { setError(asError(cause, "Upload failed")); }
+    setSending(false);
   };
 
   const toggleRecording = async () => {
@@ -222,24 +314,27 @@ export default function ChatApp({ identityName }: { identityName: string }) {
       const peer = await preparePeer(mode);
       await peer.setLocalDescription(await peer.createOffer());
       await waitForIce(peer);
-      const { id } = await API<{ id: string }>("/api/calls", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start", conversationId: selected.id, mode, sdp: JSON.stringify(peer.localDescription) }),
-      });
-      setActiveCall({ id, conversationId: selected.id, callerId: me.id, calleeId: selected.peerId, callerName: me.displayName, peerName: selected.peerName, mode, status: "ringing", offerSdp: JSON.stringify(peer.localDescription), answerSdp: null });
-    } catch { closeCall(false); setError("Camera or microphone access is needed to start a call."); }
+      const offer = peer.localDescription?.toJSON() || null;
+      const { data, error: callError } = await supabase.from("calls").insert({
+        conversation_id: selected.id, caller_id: me.id, callee_id: selected.peerId, mode, offer_sdp: offer,
+      }).select("id").single();
+      if (callError) throw callError;
+      setActiveCall({ id: data.id, conversationId: selected.id, callerId: me.id, calleeId: selected.peerId, callerName: me.displayName, peerName: selected.peerName, mode, status: "ringing", offerSdp: offer, answerSdp: null });
+    } catch (cause) { closeCall(false); setError(asError(cause, "Camera or microphone access is needed to start a call.")); }
   };
 
   const answerCall = async () => {
-    if (!incoming) return;
+    if (!incoming?.offerSdp) return;
     try {
       const peer = await preparePeer(incoming.mode);
-      await peer.setRemoteDescription(JSON.parse(incoming.offerSdp));
+      await peer.setRemoteDescription(incoming.offerSdp);
       await peer.setLocalDescription(await peer.createAnswer());
       await waitForIce(peer);
-      await API("/api/calls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "answer", callId: incoming.id, sdp: JSON.stringify(peer.localDescription) }) });
-      setActiveCall({ ...incoming, peerName: incoming.callerName, status: "active" }); setIncoming(null);
-    } catch { setError("Could not connect the call. Check your camera and microphone permissions."); }
+      const answer = peer.localDescription?.toJSON() || null;
+      const { error: answerError } = await supabase.from("calls").update({ status: "active", answer_sdp: answer, updated_at: new Date().toISOString() }).eq("id", incoming.id);
+      if (answerError) throw answerError;
+      setActiveCall({ ...incoming, peerName: incoming.callerName, status: "active", answerSdp: answer }); setIncoming(null);
+    } catch (cause) { setError(asError(cause, "Could not connect the call.")); }
   };
 
   const toggleMute = () => {
@@ -251,7 +346,9 @@ export default function ChatApp({ identityName }: { identityName: string }) {
     if (track) { track.enabled = !track.enabled; setCameraOff(!track.enabled); }
   };
 
-  if (!me) return <div className="app-loading"><span className="brand-mark">R</span><p>{error || `Opening Relay for ${identityName}…`}</p></div>;
+  if (!authReady) return <div className="app-loading"><span className="brand-mark">R</span><p>Opening Relay…</p></div>;
+  if (!authUser) return <AuthLanding />;
+  if (!appReady || !me || me.id !== authUser.id) return <div className="app-loading"><span className="brand-mark">R</span><p>{error || "Loading your conversations…"}</p></div>;
 
   return (
     <main className="chat-shell">
@@ -290,10 +387,9 @@ export default function ChatApp({ identityName }: { identityName: string }) {
               const showName = !mine && messages[index - 1]?.senderId !== message.senderId;
               return <div className={`message ${mine ? "mine" : "theirs"}`} key={message.id}>
                 {showName && <small className="sender-name">{message.senderName}</small>}
-                {/* Private message media is served by an authenticated route, so it bypasses the public image optimizer. */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                {message.kind === "image" && <div className="image-message"><img src={`/api/media/${message.id}`} alt={message.objectName || "Shared image"} /><time>{relativeTime(message.createdAt)}</time></div>}
-                {message.kind === "audio" && <div className="audio-message"><span>♪</span><audio controls preload="metadata" src={`/api/media/${message.id}`} /><time>{relativeTime(message.createdAt)}</time></div>}
+                {message.kind === "image" && message.mediaUrl && <div className="image-message"><img src={message.mediaUrl} alt={message.objectName || "Shared image"} /><time>{relativeTime(message.createdAt)}</time></div>}
+                {message.kind === "audio" && message.mediaUrl && <div className="audio-message"><span>♪</span><audio controls preload="metadata" src={message.mediaUrl} /><time>{relativeTime(message.createdAt)}</time></div>}
                 {message.kind === "text" && <div className="text-message"><span>{message.body}</span><time>{relativeTime(message.createdAt)}</time></div>}
               </div>;
             })}
@@ -309,7 +405,7 @@ export default function ChatApp({ identityName }: { identityName: string }) {
         </> : <div className="no-chat"><div className="no-chat-mark">R</div><h1>Your conversations,<br /><em>right here.</em></h1><p>Find a friend and start with a message.</p><button onClick={() => setShowSearch(true)}>Start a conversation</button></div>}
       </section>
 
-      {showSearch && <div className="modal-backdrop" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="New conversation"><button className="modal-close" onClick={() => setShowSearch(false)}>×</button><p className="eyebrow">New conversation</p><h2>Who’s on your mind?</h2><label className="search-field"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or @handle" /></label><div className="search-results">{search.length < 2 && <p>Type at least two characters to find someone on Relay.</p>}{search.length >= 2 && results.length === 0 && <p>No matches yet. They may need to create a Relay account first.</p>}{results.map((user) => <button key={user.id} onClick={() => startConversation(user.id)}><span className="avatar avatar-2">{initials(user.displayName)}</span><span><strong>{user.displayName}</strong><small>@{user.handle}</small></span><b>Message →</b></button>)}</div></section></div>}
+      {showSearch && <div className="modal-backdrop" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="New conversation"><button className="modal-close" onClick={() => setShowSearch(false)}>×</button><p className="eyebrow">New conversation</p><h2>Who’s on your mind?</h2><label className="search-field"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or @handle" /></label><div className="search-results">{search.length < 2 && <p>Type at least two characters to find someone on Relay.</p>}{search.length >= 2 && results.length === 0 && <p>No matches yet. They may need to create a Relay account first.</p>}{search.length >= 2 && results.map((user) => <button key={user.id} onClick={() => startConversation(user.id)}><span className="avatar avatar-2">{initials(user.displayName)}</span><span><strong>{user.displayName}</strong><small>@{user.handle}</small></span><b>Message →</b></button>)}</div></section></div>}
 
       {showProfile && <ProfileModal user={me} onClose={() => setShowProfile(false)} onSave={(user) => { setMe(user); setShowProfile(false); }} />}
 
@@ -325,6 +421,44 @@ export default function ChatApp({ identityName }: { identityName: string }) {
   );
 }
 
+function AuthLanding() {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"signup" | "signin">("signup");
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const show = (nextMode: "signup" | "signin") => { setMode(nextMode); setOpen(true); setError(""); setNotice(""); };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try {
+      if (mode === "signup") {
+        if (displayName.trim().length < 2) throw new Error("Enter a display name with at least 2 characters.");
+        const { data, error: authError } = await supabase.auth.signUp({
+          email, password,
+          options: { data: { display_name: displayName.trim() }, emailRedirectTo: window.location.origin },
+        });
+        if (authError) throw authError;
+        if (!data.session) setNotice("Account created. Check your email to confirm it, then sign in.");
+      } else {
+        const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
+        if (authError) throw authError;
+      }
+    } catch (cause) { setError(asError(cause, "Authentication failed")); }
+    setBusy(false);
+  };
+  return <main className="landing">
+    <nav className="landing-nav" aria-label="Main navigation"><a className="brand brand-dark" href="#top" aria-label="Relay home"><span className="brand-mark">R</span><span>relay</span></a><button className="nav-signin" onClick={() => show("signin")}>Sign in</button></nav>
+    <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Your people, one tap away</p><h1>Talk like you’re<br />in the same room.</h1><p className="hero-lede">Messages, moments, and face-to-face calls in one beautifully simple place. Relay is free to join and built for the conversations that matter.</p><div className="hero-actions"><button className="primary-cta" onClick={() => show("signup")}>Create your free account <span>→</span></button><span className="microcopy">No card. No clutter.</span></div></div>
+      <div className="hero-visual" aria-label="Relay conversation preview"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="phone-card"><div className="phone-top"><span className="avatar coral">M</span><div><strong>Maya</strong><small>online now</small></div><button aria-label="Start video call">◉</button></div><div className="sample-chat"><div className="sample-day">TODAY</div><div className="bubble received">The light is perfect here ✨<small>10:41</small></div><div className="sample-image"><div className="sun" /><div className="ridge ridge-a"/><div className="ridge ridge-b"/></div><div className="bubble sent">Save me a seat?<small>10:43 · read</small></div><div className="voice-note"><button aria-label="Play voice message">▶</button><div className="wave">▂▄▅▃▇▅▂▄▆▃▅▇▂▄</div><span>0:18</span></div></div><div className="sample-composer"><span>Write a message…</span><b>↑</b></div></div><div className="float-pill pill-call"><span>●</span> Crystal-clear calls</div><div className="float-pill pill-private">✦ Private by design</div></div>
+    </section>
+    <section className="feature-strip" aria-label="Relay features"><article><span>01</span><h2>Say it your way</h2><p>Text, photos, and voice notes—share what words alone can’t.</p></article><article><span>02</span><h2>Feel closer</h2><p>Jump into crisp voice or video calls without links or scheduling.</p></article><article><span>03</span><h2>Keep it yours</h2><p>Your media stays private and every conversation is account-protected.</p></article></section>
+    {open && <div className="modal-backdrop" onMouseDown={() => setOpen(false)}><form className="modal auth-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setOpen(false)}>×</button><p className="eyebrow">{mode === "signup" ? "Join Relay" : "Welcome back"}</p><h2>{mode === "signup" ? "Create your account." : "Good to see you."}</h2>{mode === "signup" && <label>Display name<input autoFocus value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label>}<label>Email<input autoFocus={mode === "signin"} type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={8} required /></label>{error && <p className="form-error">{error}</p>}{notice && <p className="form-notice">{notice}</p>}<button className="save-profile" disabled={busy}>{busy ? "Please wait…" : mode === "signup" ? "Create free account" : "Sign in"}</button><button type="button" className="auth-switch" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}>{mode === "signup" ? "Already have an account? Sign in" : "New to Relay? Create an account"}</button></form></div>}
+  </main>;
+}
+
 function ProfileModal({ user, onClose, onSave }: { user: User; onClose: () => void; onSave: (user: User) => void }) {
   const [displayName, setDisplayName] = useState(user.displayName);
   const [handle, setHandle] = useState(user.handle);
@@ -332,10 +466,9 @@ function ProfileModal({ user, onClose, onSave }: { user: User; onClose: () => vo
   const [error, setError] = useState("");
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setError("");
-    try {
-      const data = await API<{ user: User }>("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ displayName, handle, bio }) });
-      onSave(data.user);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save profile"); }
+    const normalizedHandle = handle.toLowerCase().replace(/[^a-z0-9_]/g, "");
+    const { data, error: saveError } = await supabase.from("profiles").update({ display_name: displayName.trim(), handle: normalizedHandle, bio: bio.trim() }).eq("id", user.id).select("*").single();
+    if (saveError) setError(saveError.message); else onSave(toUser(data));
   };
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(event.target.value)} maxLength={24} /></div></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error">{error}</p>}<button className="save-profile">Save profile</button><a className="signout" href="/signout-with-chatgpt?return_to=/">Sign out</a></form></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(event.target.value)} minLength={3} maxLength={24} pattern="[a-z0-9_]+" required /></div></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
 }
