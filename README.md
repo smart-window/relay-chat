@@ -17,7 +17,7 @@ Relay is a full-stack chat platform for text, image, and audio messages plus bro
 - Next.js 16 and React 19
 - Supabase Auth, Postgres, Realtime, and private Storage
 - WebRTC with public STUN discovery
-- Vercel-compatible deployment
+- Free static hosting on GitHub Pages
 
 ## Local development
 
@@ -38,12 +38,9 @@ npx tsc --noEmit
 npm run build
 ```
 
-## Deploy to Vercel
+## Deploy to GitHub Pages
 
-1. Import this GitHub repository into a Vercel Hobby project.
-2. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` as environment variables.
-3. Deploy with the standard Next.js preset.
-4. Add the Vercel production URL to Supabase Authentication → URL Configuration as the Site URL and an allowed redirect URL.
+The included Actions workflow exports the Next.js frontend and publishes it to GitHub Pages whenever `main` changes. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` as repository Actions secrets, enable GitHub Pages with GitHub Actions as the source, and set `https://smart-window.github.io/relay-chat/` as the Supabase Auth Site URL and an allowed redirect URL.
 
 ## Current scope
 
