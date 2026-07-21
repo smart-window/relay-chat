@@ -65,6 +65,16 @@ function waitForIce(peer: RTCPeerConnection) {
   });
 }
 
+async function requestMediaPermission(kind: "microphone" | "camera") {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(kind === "microphone" ? { audio: true } : { video: true });
+    stream.getTracks().forEach((track) => track.stop());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default function ChatApp() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -101,23 +111,14 @@ export default function ChatApp() {
   const selectedIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
   const notifiedCallRef = useRef<string | null>(null);
+  const automaticPermissionRequestRef = useRef(false);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
 
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
 
-  const requestMediaPermission = async (kind: "microphone" | "camera") => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(kind === "microphone" ? { audio: true } : { video: true });
-      stream.getTracks().forEach((track) => track.stop());
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const requestDesktopPermissions = async () => {
+  const requestDesktopPermissions = useCallback(async () => {
     setPermissionBusy(true);
     setPermissionError("");
     const notifications = await enableDesktopNotifications({ retry: true });
@@ -136,7 +137,14 @@ export default function ChatApp() {
       setPermissionError("Some permissions are still blocked. Allow Relay in your system settings, then try again.");
     }
     setPermissionBusy(false);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!showPermissions || automaticPermissionRequestRef.current) return;
+    automaticPermissionRequestRef.current = true;
+    const requestTimer = setTimeout(() => { requestDesktopPermissions().catch(() => undefined); }, 300);
+    return () => clearTimeout(requestTimer);
+  }, [requestDesktopPermissions, showPermissions]);
 
   useEffect(() => {
     let mounted = true;
@@ -558,7 +566,7 @@ function PermissionsModal({ permissions, busy, error, onEnable, onClose }: { per
   ];
   const allGranted = Object.values(permissions).every((status) => status === "granted");
   const label = (status: PermissionStatus) => status === "granted" ? "Enabled" : status === "blocked" ? "Blocked" : "Not checked";
-  return <div className="modal-backdrop"><section className="modal permissions-modal" aria-modal="true" role="dialog" aria-labelledby="permissions-title"><button type="button" className="modal-close" onClick={onClose} aria-label="Close permission setup">×</button><p className="eyebrow">Desktop setup</p><h2 id="permissions-title">Enable Relay’s permissions.</h2><p className="permissions-intro">Approve each system prompt so messages, voice notes, and calls work correctly.</p><div className="permission-list">{rows.map((row) => <article className="permission-row" key={row.key}><span className={`permission-icon ${permissions[row.key]}`}>{permissions[row.key] === "granted" ? "✓" : permissions[row.key] === "blocked" ? "!" : "•"}</span><span><strong>{row.title}</strong><small>{row.detail}</small></span><b className={permissions[row.key]}>{label(permissions[row.key])}</b></article>)}</div>{error && <><p className="form-error permission-error" role="alert">{error}</p><p className="settings-help">macOS: System Settings → Privacy &amp; Security. Windows: Settings → Privacy &amp; security.</p></>}<button type="button" className="save-profile" onClick={allGranted ? onClose : onEnable} disabled={busy}>{busy ? "Waiting for system prompts…" : allGranted ? "Done" : permissions.notifications === "unchecked" ? "Enable all permissions" : "Try again"}</button><button type="button" className="auth-switch" onClick={onClose}>Later</button></section></div>;
+  return <div className="modal-backdrop"><section className="modal permissions-modal" aria-modal="true" role="dialog" aria-labelledby="permissions-title"><button type="button" className="modal-close" onClick={onClose} aria-label="Close permission setup">×</button><p className="eyebrow">Automatic desktop setup</p><h2 id="permissions-title">Relay is requesting access.</h2><p className="permissions-intro">Relay starts each request automatically. Choose Allow in the system dialogs so messages, voice notes, and calls work correctly.</p><div className="permission-list">{rows.map((row) => <article className="permission-row" key={row.key}><span className={`permission-icon ${permissions[row.key]}`}>{permissions[row.key] === "granted" ? "✓" : permissions[row.key] === "blocked" ? "!" : "•"}</span><span><strong>{row.title}</strong><small>{row.detail}</small></span><b className={permissions[row.key]}>{busy && permissions[row.key] === "unchecked" ? "Requesting…" : label(permissions[row.key])}</b></article>)}</div>{error && <><p className="form-error permission-error" role="alert">{error}</p><p className="settings-help">macOS: System Settings → Privacy &amp; Security. Windows: Settings → Privacy &amp; security.</p></>}<button type="button" className="save-profile" onClick={allGranted ? onClose : onEnable} disabled={busy}>{busy ? "Waiting for system approval…" : allGranted ? "Done" : permissions.notifications === "unchecked" ? "Request permissions now" : "Try again"}</button><button type="button" className="auth-switch" onClick={onClose}>Later</button></section></div>;
 }
 
 function ProfileModal({ user, onClose, onSave, onPermissions }: { user: User; onClose: () => void; onSave: (user: User) => void; onPermissions: () => void }) {
