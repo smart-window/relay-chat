@@ -203,6 +203,7 @@ button { color: inherit; }
 .profile-modal textarea { height: 75px; resize: none; }
 .handle-input { display: flex; align-items: center; padding-left: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }
 .handle-input input { margin: 0; border: 0; }
+.profile-modal .field-help { display: block; margin-top: 6px; color: #7f8782; text-transform: none; letter-spacing: 0; font-size: 10px; font-weight: 500; line-height: 1.45; }
 .save-profile { width: 100%; margin-top: 20px; padding: 13px; border: 0; border-radius: 13px; color: white; background: var(--forest); cursor: pointer; font-weight: 700; }
 .signout { display: inline-block; margin-top: 16px; color: #7b817e; font-size: 11px; }
 .form-error { color: #a13d31; font-size: 11px; }
