@@ -93,6 +93,8 @@ export default function ChatApp() {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState("");
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState("");
   const [updateMessage, setUpdateMessage] = useState("");
   const [mobileSidebar, setMobileSidebar] = useState(true);
   const [sending, setSending] = useState(false);
@@ -114,6 +116,7 @@ export default function ChatApp() {
   const conversationsRef = useRef<Conversation[]>([]);
   const notifiedCallRef = useRef<string | null>(null);
   const automaticPermissionRequestRef = useRef(false);
+  const updateCheckRef = useRef({ checking: false, checkedAt: 0 });
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) || null;
 
@@ -141,15 +144,33 @@ export default function ChatApp() {
     setPermissionBusy(false);
   }, []);
 
+  const checkForUpdates = useCallback(async () => {
+    if (!isDesktopApp() || updateCheckRef.current.checking) return;
+    updateCheckRef.current.checking = true;
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check({ timeout: 30_000 });
+      setUpdateAvailable(Boolean(update));
+      setUpdateVersion(update?.version || "");
+      await update?.close();
+    } catch {
+      // A temporary network failure should not interrupt messaging.
+    } finally {
+      updateCheckRef.current = { checking: false, checkedAt: Date.now() };
+    }
+  }, []);
+
   const updateRelay = useCallback(async () => {
     if (!isDesktopApp()) return;
     setUpdateBusy(true);
     setUpdateMessage("Checking for updates…");
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
+      const update = await check({ timeout: 30_000 });
       if (!update) {
-        setUpdateMessage("Relay is already up to date.");
+        setUpdateAvailable(false);
+        setUpdateVersion("");
+        setUpdateMessage("");
         setUpdateBusy(false);
         return;
       }
@@ -172,6 +193,24 @@ export default function ChatApp() {
       setUpdateBusy(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!isDesktopApp()) return;
+    const runCheck = () => { checkForUpdates().catch(() => undefined); };
+    const startupTimer = setTimeout(runCheck, 2_500);
+    const interval = setInterval(runCheck, 30 * 60_000);
+    const checkWhenActive = () => {
+      if (document.visibilityState === "visible" && Date.now() - updateCheckRef.current.checkedAt >= 5 * 60_000) runCheck();
+    };
+    window.addEventListener("focus", checkWhenActive);
+    document.addEventListener("visibilitychange", checkWhenActive);
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(interval);
+      window.removeEventListener("focus", checkWhenActive);
+      document.removeEventListener("visibilitychange", checkWhenActive);
+    };
+  }, [checkForUpdates]);
 
   useEffect(() => {
     if (!showPermissions || automaticPermissionRequestRef.current) return;
@@ -537,7 +576,7 @@ export default function ChatApp() {
 
       {showSearch && <div className="modal-backdrop" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="New conversation"><button className="modal-close" onClick={() => setShowSearch(false)}>×</button><p className="eyebrow">New conversation</p><h2>Who’s on your mind?</h2><label className="search-field"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or @handle" /></label><div className="search-results">{search.length < 2 && <p>Type at least two characters to find someone on Relay.</p>}{search.length >= 2 && results.length === 0 && <p>No matches yet. They may need to create a Relay account first.</p>}{search.length >= 2 && results.map((user) => <button key={user.id} onClick={() => startConversation(user.id)}><span className="avatar avatar-2">{initials(user.displayName)}</span><span><strong>{user.displayName}</strong><small>@{user.handle}</small></span><b>Message →</b></button>)}</div></section></div>}
 
-      {showProfile && <ProfileModal user={me} updateBusy={updateBusy} updateMessage={updateMessage} onUpdate={updateRelay} onClose={() => setShowProfile(false)} onPermissions={() => { setShowProfile(false); setShowPermissions(true); }} onSave={(user) => { setMe(user); setShowProfile(false); }} />}
+      {showProfile && <ProfileModal user={me} updateBusy={updateBusy} updateAvailable={updateAvailable} updateVersion={updateVersion} updateMessage={updateMessage} onUpdate={updateRelay} onClose={() => setShowProfile(false)} onPermissions={() => { setShowProfile(false); setShowPermissions(true); }} onSave={(user) => { setMe(user); setShowProfile(false); }} />}
 
       {showPermissions && <PermissionsModal permissions={desktopPermissions} busy={permissionBusy} error={permissionError} onEnable={requestDesktopPermissions} onClose={() => setShowPermissions(false)} />}
 
@@ -554,6 +593,7 @@ export default function ChatApp() {
 }
 
 function AuthLanding() {
+  const desktop = isDesktopApp();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [displayName, setDisplayName] = useState("");
@@ -582,12 +622,12 @@ function AuthLanding() {
     setBusy(false);
   };
   return <main className="landing">
-    <nav className="landing-nav" aria-label="Main navigation"><a className="brand brand-dark" href="#top" aria-label="Relay home"><span className="brand-mark">R</span><span>relay</span></a><div className="nav-actions"><a href="./download/">Download apps</a><button className="nav-signin" onClick={() => show("signin")}>Sign in</button></div></nav>
-    <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Your people, one tap away</p><h1>Talk like you’re<br />in the same room.</h1><p className="hero-lede">Messages, moments, and face-to-face calls in one beautifully simple place. Relay is free to join and built for the conversations that matter.</p><div className="hero-actions"><button className="primary-cta" onClick={() => show("signup")}>Create your free account <span>→</span></button><a className="download-cta" href="./download/">Get the desktop app ↓</a></div><span className="microcopy">No card. No clutter. Free to download.</span></div>
+    <nav className="landing-nav" aria-label="Main navigation"><a className="brand brand-dark" href="#top" aria-label="Relay home"><span className="brand-mark">R</span><span>relay</span></a><div className="nav-actions">{!desktop && <a href="./download/">Download apps</a>}<button className="nav-signin" onClick={() => show("signin")}>Sign in</button></div></nav>
+    <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Your people, one tap away</p><h1>Talk like you’re<br />in the same room.</h1><p className="hero-lede">Messages, moments, and face-to-face calls in one beautifully simple place. Relay is free to join and built for the conversations that matter.</p><div className="hero-actions"><button className="primary-cta" onClick={() => show("signup")}>Create your free account <span>→</span></button>{!desktop && <a className="download-cta" href="./download/">Get the desktop app ↓</a>}</div><span className="microcopy">No card. No clutter. Free to use.</span></div>
       <div className="hero-visual" aria-label="Relay conversation preview"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="phone-card"><div className="phone-top"><span className="avatar coral">M</span><div><strong>Maya</strong><small>online now</small></div><button aria-label="Start video call">◉</button></div><div className="sample-chat"><div className="sample-day">TODAY</div><div className="bubble received">The light is perfect here ✨<small>10:41</small></div><div className="sample-image"><div className="sun" /><div className="ridge ridge-a"/><div className="ridge ridge-b"/></div><div className="bubble sent">Save me a seat?<small>10:43 · read</small></div><div className="voice-note"><button aria-label="Play voice message">▶</button><div className="wave">▂▄▅▃▇▅▂▄▆▃▅▇▂▄</div><span>0:18</span></div></div><div className="sample-composer"><span>Write a message…</span><b>↑</b></div></div><div className="float-pill pill-call"><span>●</span> Crystal-clear calls</div><div className="float-pill pill-private">✦ Private by design</div></div>
     </section>
     <section className="feature-strip" aria-label="Relay features"><article><span>01</span><h2>Say it your way</h2><p>Text, photos, and voice notes—share what words alone can’t.</p></article><article><span>02</span><h2>Feel closer</h2><p>Jump into crisp voice or video calls without links or scheduling.</p></article><article><span>03</span><h2>Keep it yours</h2><p>Your media stays private and every conversation is account-protected.</p></article></section>
-    <DownloadSection />
+    {!desktop && <DownloadSection />}
     {open && <div className="modal-backdrop" onMouseDown={() => setOpen(false)}><form className="modal auth-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setOpen(false)}>×</button><p className="eyebrow">{mode === "signup" ? "Join Relay" : "Welcome back"}</p><h2>{mode === "signup" ? "Create your account." : "Good to see you."}</h2>{mode === "signup" && <label>Display name<input autoFocus value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={50} required /></label>}<label>Email<input autoFocus={mode === "signin"} type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={8} required /></label>{error && <p className="form-error">{error}</p>}{notice && <p className="form-notice">{notice}</p>}<button className="save-profile" disabled={busy}>{busy ? "Please wait…" : mode === "signup" ? "Create free account" : "Sign in"}</button><button type="button" className="auth-switch" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setNotice(""); }}>{mode === "signup" ? "Already have an account? Sign in" : "New to Relay? Create an account"}</button></form></div>}
   </main>;
 }
@@ -603,7 +643,7 @@ function PermissionsModal({ permissions, busy, error, onEnable, onClose }: { per
   return <div className="modal-backdrop"><section className="modal permissions-modal" aria-modal="true" role="dialog" aria-labelledby="permissions-title"><button type="button" className="modal-close" onClick={onClose} aria-label="Close permission setup">×</button><p className="eyebrow">Automatic desktop setup</p><h2 id="permissions-title">Relay is requesting access.</h2><p className="permissions-intro">Relay starts each request automatically. Choose Allow in the system dialogs so messages, voice notes, and calls work correctly.</p><div className="permission-list">{rows.map((row) => <article className="permission-row" key={row.key}><span className={`permission-icon ${permissions[row.key]}`}>{permissions[row.key] === "granted" ? "✓" : permissions[row.key] === "blocked" ? "!" : "•"}</span><span><strong>{row.title}</strong><small>{row.detail}</small></span><b className={permissions[row.key]}>{busy && permissions[row.key] === "unchecked" ? "Requesting…" : label(permissions[row.key])}</b></article>)}</div>{error && <><p className="form-error permission-error" role="alert">{error}</p><p className="settings-help">macOS: System Settings → Privacy &amp; Security. Windows: Settings → Privacy &amp; security.</p></>}<button type="button" className="save-profile" onClick={allGranted ? onClose : onEnable} disabled={busy}>{busy ? "Waiting for system approval…" : allGranted ? "Done" : permissions.notifications === "unchecked" ? "Request permissions now" : "Try again"}</button><button type="button" className="auth-switch" onClick={onClose}>Later</button></section></div>;
 }
 
-function ProfileModal({ user, updateBusy, updateMessage, onUpdate, onClose, onSave, onPermissions }: { user: User; updateBusy: boolean; updateMessage: string; onUpdate: () => void; onClose: () => void; onSave: (user: User) => void; onPermissions: () => void }) {
+function ProfileModal({ user, updateBusy, updateAvailable, updateVersion, updateMessage, onUpdate, onClose, onSave, onPermissions }: { user: User; updateBusy: boolean; updateAvailable: boolean; updateVersion: string; updateMessage: string; onUpdate: () => void; onClose: () => void; onSave: (user: User) => void; onPermissions: () => void }) {
   const [displayName, setDisplayName] = useState(user.displayName);
   const [handle, setHandle] = useState(user.handle);
   const [bio, setBio] = useState(user.bio);
@@ -617,5 +657,5 @@ function ProfileModal({ user, updateBusy, updateMessage, onUpdate, onClose, onSa
     const { data, error: saveError } = await supabase.from("profiles").update({ display_name: displayName.trim(), handle: normalizedHandle, bio: bio.trim() }).eq("id", user.id).select("*").single();
     if (saveError) setError(saveError.code === "23505" ? "That handle is already taken. Try another one." : saveError.message); else onSave(toUser(data));
   };
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()} noValidate><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(normalizeHandle(event.target.value))} maxLength={24} placeholder="smart_window" autoCapitalize="none" autoComplete="username" spellCheck={false} aria-describedby="handle-help" /></div><small className="field-help" id="handle-help">3–24 lowercase letters, numbers, or underscores. Example: smart_window</small></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={onPermissions}>Camera, microphone &amp; notifications</button>{isDesktopApp() && <><button type="button" className="auth-switch update-relay" onClick={onUpdate} disabled={updateBusy}>{updateBusy ? "Updating Relay…" : "Update Relay"}</button>{updateMessage && <p className="update-status" role="status">{updateMessage}</p>}</>}<button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><form className="modal profile-modal" onSubmit={save} onMouseDown={(event) => event.stopPropagation()} noValidate><button type="button" className="modal-close" onClick={onClose}>×</button><span className="avatar avatar-me xlarge">{initials(displayName)}</span><p className="eyebrow">Your Relay profile</p><h2>Make it feel like you.</h2><label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={50} /></label><label>Handle<div className="handle-input"><span>@</span><input value={handle} onChange={(event) => setHandle(normalizeHandle(event.target.value))} maxLength={24} placeholder="smart_window" autoCapitalize="none" autoComplete="username" spellCheck={false} aria-describedby="handle-help" /></div><small className="field-help" id="handle-help">3–24 lowercase letters, numbers, or underscores. Example: smart_window</small></label><label>Bio<textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={140} placeholder="A little about you" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-profile">Save profile</button><button type="button" className="auth-switch" onClick={onPermissions}>Camera, microphone &amp; notifications</button>{isDesktopApp() && updateAvailable && <><button type="button" className="auth-switch update-relay" onClick={onUpdate} disabled={updateBusy}>{updateBusy ? "Updating Relay…" : `Update Relay to ${updateVersion}`}</button>{updateMessage && <p className="update-status" role="status">{updateMessage}</p>}</>}<button type="button" className="auth-switch" onClick={() => supabase.auth.signOut()}>Sign out</button></form></div>;
 }
